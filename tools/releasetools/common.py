@@ -29,6 +29,11 @@ import threading
 import time
 import zipfile
 
+try:
+  from backports import lzma;
+except ImportError:
+  lzma = None
+
 import blockimgdiff
 from rangelib import *
 
@@ -1095,20 +1100,23 @@ def ComputeDifferences(diffs):
 
 
 class BlockDifference:
-  def __init__(self, partition, tgt, src=None, check_first_block=False):
+  def __init__(self, partition, tgt, src=None, check_first_block=False, version=None, use_lzma=False):
     self.tgt = tgt
     self.src = src
     self.partition = partition
     self.check_first_block = check_first_block
+    self.use_lzma = use_lzma
 
-    version = 1
-    if OPTIONS.info_dict:
-      version = max(
-          int(i) for i in
-          OPTIONS.info_dict.get("blockimgdiff_versions", "1").split(","))
+    if version is None:
+      version = 1
+      if OPTIONS.info_dict:
+        version = max(
+            int(i) for i in
+            OPTIONS.info_dict.get("blockimgdiff_versions", "1").split(","))
+    self.version = version
 
     b = blockimgdiff.BlockImageDiff(tgt, src, threads=OPTIONS.worker_threads,
-                                    version=version)
+                                    version=self.version, use_lzma=use_lzma)
     tmpdir = tempfile.mkdtemp()
     OPTIONS.tempfiles.append(tmpdir)
     self.path = os.path.join(tmpdir, partition)
@@ -1137,27 +1145,42 @@ class BlockDifference:
                          (self.device, self.src.care_map.to_string_raw(),
                           self.src.TotalSha1()))
       script.Print("Verified %s image..." % (self.partition,))
-      script.AppendExtra(('else\n'
-                          '  (range_sha1("%s", "%s") == "%s") ||\n'
-                          '  abort("%s partition has unexpected contents");\n'
-                          'endif;') %
-                         (self.device, self.tgt.care_map.to_string_raw(),
-                          self.tgt.TotalSha1(), self.partition))
+      # Abort the OTA update if it doesn't support resumable OTA (i.e. version<3)
+      # and the checksum doesn't match the one in the source partition.
+      if self.version < 3:
+        script.AppendExtra(('else\n'
+                            '  abort("%s partition has unexpected contents");\n'
+                            'endif;') % (self.partition))
+      else:
+        script.AppendExtra(('else\n'
+                            '  (range_sha1("%s", "%s") == "%s") ||\n'
+                            '  abort("%s partition has unexpected contents");\n'
+                            'endif;') %
+                           (self.device, self.tgt.care_map.to_string_raw(),
+                            self.tgt.TotalSha1(), self.partition))
 
   def _WriteUpdate(self, script, output_zip):
     partition = self.partition
+    suffix = ".new.dat"
+
     with open(self.path + ".transfer.list", "rb") as f:
       ZipWriteStr(output_zip, partition + ".transfer.list", f.read())
-    with open(self.path + ".new.dat", "rb") as f:
-      ZipWriteStr(output_zip, partition + ".new.dat", f.read())
+    if lzma and self.use_lzma:
+      suffix += ".xz"
+      with open(self.path + suffix, "rb") as f:
+        ZipWriteStr(output_zip, partition + suffix, f.read(),
+                           compression=zipfile.ZIP_STORED)
+    else:
+      with open(self.path + suffix, "rb") as f:
+        ZipWriteStr(output_zip, partition + suffix, f.read())
     with open(self.path + ".patch.dat", "rb") as f:
       ZipWriteStr(output_zip, partition + ".patch.dat", f.read(),
                          compression=zipfile.ZIP_STORED)
 
     call = (('block_image_update("%s", '
              'package_extract_file("%s.transfer.list"), '
-             '"%s.new.dat", "%s.patch.dat");\n') %
-            (self.device, partition, partition, partition))
+             '"%s%s", "%s.patch.dat");\n') %
+            (self.device, partition, partition, suffix, partition))
     script.AppendExtra(script._WordWrap(call))
 
   def _CheckFirstBlock(self, script):
