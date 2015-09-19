@@ -10,7 +10,6 @@ ifneq ($(BUILD_WITH_COLORS),0)
   CL_MAG="\033[35m"
   CL_CYN="\033[36m"
   CL_RST="\033[0m"
-
 endif
 
 # HACK: clear LOCAL_PATH from including last build target before calling
@@ -976,7 +975,13 @@ INTERNAL_SYSTEMIMAGE_FILES := $(filter $(TARGET_OUT)/%, \
     $(PDK_FUSION_SYSIMG_FILES) \
     $(RECOVERY_RESOURCE_ZIP))
 
-FULL_SYSTEMIMAGE_DEPS := $(INTERNAL_SYSTEMIMAGE_FILES) $(INTERNAL_USERIMAGES_DEPS)
+systemimage-changelog: $(INTERNAL_SYSTEMIMAGE_FILES)
+	@echo -e "Making changelog!"
+	$(hide) APKCERTS=$(APKCERTS_FILE) ./vendor/eos/tools/changelog
+
+.PHONY: systemimage-changelog
+
+FULL_SYSTEMIMAGE_DEPS := $(INTERNAL_SYSTEMIMAGE_FILES) $(INTERNAL_USERIMAGES_DEPS) systemimage-changelog
 # -----------------------------------------------------------------
 # installed file list
 # Depending on anything that $(BUILT_SYSTEMIMAGE) depends on.
@@ -1339,6 +1344,11 @@ DISTTOOLS :=  $(HOST_OUT_EXECUTABLES)/minigzip \
 	  $(HOST_OUT_EXECUTABLES)/verity_signer \
 	  $(HOST_OUT_EXECUTABLES)/append2simg \
 	  $(HOST_OUT_EXECUTABLES)/boot_signer
+
+ifneq (,$(filter linux darwin,$(HOST_OS)))
+  DISTTOOLS += $(HOST_OUT_EXECUTABLES)/mkf2fsuserimg.sh \
+	$(HOST_OUT_EXECUTABLES)/make_f2fs
+endif
 
 OTATOOLS := $(DISTTOOLS) \
 	  $(HOST_OUT_EXECUTABLES)/aapt
